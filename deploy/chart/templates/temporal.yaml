@@ -72,8 +72,11 @@ spec:
               value: config/dynamicconfig/development-sql.yaml
             - name: ENABLE_ES
               value: {{ .Values.temporal.elasticsearch | quote }}
-            - name: TEMPORAL_ADDRESS
-              value: 127.0.0.1:7233
+            # TEMPORAL_ADDRESS is deliberately unset. It is the address auto-setup's
+            # CLI dials to register the default namespace, and the server binds the
+            # pod IP rather than the loopback -- pointing it at 127.0.0.1 leaves
+            # auto-setup polling a closed port forever and the namespace is never
+            # created. Unset, it defaults to whatever the server bound.
             - name: DEFAULT_NAMESPACE
               value: {{ .Values.temporal.namespace | quote }}
           readinessProbe:
