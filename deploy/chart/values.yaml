@@ -1,0 +1,117 @@
+# Postiz, self-hosted for getkiyas social media.
+#
+# One chart, four workloads: the application itself, PostgreSQL, Redis and Temporal.
+# They are in one chart rather than four because nothing else in the cluster uses any
+# of them -- they exist only to make Postiz run, and they should appear and disappear
+# with it. The catalogue's own PostgreSQL is deliberately untouched: a social media
+# tool has no business sharing a database with the price data.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # Built from this fork by .github/workflows/build-image.yaml, linux/arm64 only --
+  # the cluster is a single Apple Silicon node, so the second architecture upstream
+  # builds would be dead weight. The tag is rewritten by CI; do not edit by hand.
+  repository: ghcr.io/ohosgor/postiz-app
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# The package is private, so the pull needs credentials. Same secret name as the
+# other namespaces use; it is copied in by hand, not held in git.
+imagePullSecrets:
+  - name: ghcr-credentials
+
+# Secrets the application reads. Created by hand (see deploy/README.md), never
+# templated: it holds the JWT signing key, the database password and every social
+# network's API credentials.
+existingSecret: postiz-secrets
+
+# Public address. Postiz serves the UI and the API from one port behind its own
+# nginx: / is the frontend, /api/ the backend. Cloudflared terminates TLS and routes
+# this hostname to the service.
+publicUrl: https://postiz.getkiyas.com
+
+# Registration is open only long enough to create the first account. Flip to "true"
+# and resync once you have logged in -- otherwise anyone who finds the hostname can
+# create an account on it.
+disableRegistration: "false"
+
+app:
+  replicaCount: 1
+  port: 5000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "3"
+      memory: 3Gi
+  storage:
+    # Uploaded media, served by the container's nginx from /uploads. Retained: these
+    # are the images attached to posts and nothing else holds a copy.
+    uploadsSize: 10Gi
+    # /config -- Postiz writes provider state here.
+    configSize: 1Gi
+    className: local-path-retain
+
+postgres:
+  image: postgres:17-alpine
+  database: postiz
+  storage:
+    size: 10Gi
+    className: local-path-retain
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+redis:
+  image: redis:7.2-alpine
+  storage:
+    size: 2Gi
+    className: local-path-retain
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+temporal:
+  # Postiz schedules every post through Temporal since v1.40; without it the
+  # orchestrator process crash-loops and nothing is ever published.
+  image: temporalio/auto-setup:1.28.1
+  namespace: default
+  # Upstream's compose runs Temporal with Elasticsearch for visibility. Elasticsearch
+  # alone wants half a gigabyte of heap and the only thing that reads it is the
+  # workflow list in a UI we do not deploy -- standard (PostgreSQL) visibility covers
+  # everything Postiz actually queries.
+  elasticsearch: false
+  # Its own database, on the same PostgreSQL instance. auto-setup connects as the
+  # superuser and creates temporal/temporal_visibility itself on first start.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  ui:
+    # The workflow browser. Off by default: it is a debugging tool, it has no
+    # authentication of its own, and it is one more thing to keep patched.
+    enabled: false
+    image: temporalio/ui:2.34.0
+
+# Storage for uploaded media. "local" keeps them on the node's disk under /uploads,
+# which is what the PVC above is for. Switch to "cloudflare" to put them in R2 -- the
+# four CLOUDFLARE_* keys then have to exist in the secret.
+storageProvider: local
+
+# Anything else Postiz reads from the environment and that is not a secret. Social
+# network credentials do NOT go here; they belong in postiz-secrets.
+extraEnv: {}

@@ -1,0 +1,150 @@
+# Temporal. Postiz schedules and publishes every post through it -- the orchestrator
+# process is a Temporal worker, and without a server to connect to it restarts
+# forever and nothing is published.
+#
+# auto-setup is the image upstream's compose uses: on first start it creates its own
+# schemas in PostgreSQL and the "default" namespace, then runs the server. On every
+# later start it finds them and skips ahead.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "postiz.fullname" . }}-temporal
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal
+spec:
+  type: ClusterIP
+  ports:
+    - port: 7233
+      targetPort: grpc
+      name: grpc
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: temporal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "postiz.fullname" . }}-temporal
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal
+spec:
+  replicas: 1
+  # The server holds long-lived gRPC streams to its workers and its schema is shared
+  # state; two copies mid-upgrade is worse than a few seconds with none.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: temporal
+  template:
+    metadata:
+      labels:
+        {{- include "postiz.labels" . | nindent 8 }}
+        app.kubernetes.io/component: temporal
+      annotations:
+        checksum/dynamicconfig: {{ include (print $.Template.BasePath "/temporal-dynamicconfig.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: temporal
+          image: {{ .Values.temporal.image }}
+          ports:
+            - name: grpc
+              containerPort: 7233
+          env:
+            - name: DB
+              value: postgres12
+            - name: DB_PORT
+              value: "5432"
+            - name: POSTGRES_SEEDS
+              value: {{ include "postiz.fullname" . }}-postgres
+            {{- include "postiz.dbCredentialsEnv" . | nindent 12 }}
+            # auto-setup wants the password under its own name; POSTGRES_PASSWORD
+            # above is what the PostgreSQL image uses. Same value, two spellings.
+            - name: POSTGRES_PWD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: POSTGRES_PASSWORD
+            - name: DYNAMIC_CONFIG_FILE_PATH
+              value: config/dynamicconfig/development-sql.yaml
+            - name: ENABLE_ES
+              value: {{ .Values.temporal.elasticsearch | quote }}
+            - name: TEMPORAL_ADDRESS
+              value: 127.0.0.1:7233
+            - name: DEFAULT_NAMESPACE
+              value: {{ .Values.temporal.namespace | quote }}
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            # The schema setup runs before the server binds, and on a cold database
+            # that takes a while.
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.temporal.resources | nindent 12 }}
+          volumeMounts:
+            - name: dynamicconfig
+              mountPath: /etc/temporal/config/dynamicconfig
+      volumes:
+        - name: dynamicconfig
+          configMap:
+            name: {{ include "postiz.fullname" . }}-temporal-dynamicconfig
+{{- if .Values.temporal.ui.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "postiz.fullname" . }}-temporal-ui
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-ui
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: temporal-ui
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "postiz.fullname" . }}-temporal-ui
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: temporal-ui
+  template:
+    metadata:
+      labels:
+        {{- include "postiz.labels" . | nindent 8 }}
+        app.kubernetes.io/component: temporal-ui
+    spec:
+      containers:
+        - name: ui
+          image: {{ .Values.temporal.ui.image }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: {{ include "postiz.fullname" . }}-temporal:7233
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+{{- end }}

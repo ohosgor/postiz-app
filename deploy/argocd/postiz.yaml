@@ -1,0 +1,42 @@
+# Argo CD application for Postiz.
+#
+# Applied once, by hand; after that Argo CD watches deploy/chart on main and syncs
+# whatever lands there -- the same arrangement the Kiyas services use.
+#
+# Its own namespace, not kiyas: nothing here talks to the catalogue, and a social
+# media tool that can be deleted wholesale without touching the price data is worth
+# the extra namespace on its own.
+#
+# prune is on -- everything in the chart is either stateless or a PVC marked
+# helm.sh/resource-policy: keep, so a resource disappearing from git should disappear
+# from the cluster. selfHeal is on for the same reason: nothing here is meant to be
+# edited with kubectl.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: postiz
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ohosgor/postiz-app.git
+    targetRevision: main
+    path: deploy/chart
+    helm:
+      valueFiles:
+        - values.yaml
+      # Without this the release is named after the Application and every resource
+      # would be "postiz-postiz-..."; the chart's fullname helper uses the release
+      # name directly.
+      releaseName: postiz
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: postiz
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

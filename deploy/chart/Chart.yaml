@@ -1,0 +1,8 @@
+apiVersion: v2
+name: postiz
+description: Postiz -- social media scheduling for getkiyas, with its own PostgreSQL, Redis and Temporal
+type: application
+version: 0.1.0
+# The upstream release this chart was written against. The running image tag lives in
+# values.yaml (image.tag) and is rewritten by CI on every build; this is documentation.
+appVersion: "v1.47.0"

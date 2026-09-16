@@ -1,0 +1,187 @@
+# The application. One container runs all of it: nginx on 5000 in front, the Next.js
+# frontend on 4200, the NestJS backend on 3000 and the Temporal worker beside them,
+# supervised by pm2. That is upstream's shipping shape, not a choice made here --
+# splitting it would mean building our own images per process and diverging from a
+# project that releases weekly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "postiz.fullname" . }}
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.app.port }}
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: app
+---
+{{- range tuple "uploads" "config" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "postiz.fullname" $ }}-{{ . }}
+  labels:
+    {{- include "postiz.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: app
+  annotations:
+    # Uploaded media and provider state outlive any one release of the chart.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ $.Values.app.storage.className }}
+  resources:
+    requests:
+      storage: {{ if eq . "uploads" }}{{ $.Values.app.storage.uploadsSize }}{{ else }}{{ $.Values.app.storage.configSize }}{{ end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "postiz.fullname" . }}
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  replicas: {{ .Values.app.replicaCount }}
+  # Both volumes are ReadWriteOnce, so a second pod cannot start while the first
+  # holds them. Recreate makes that an ordered restart instead of a stuck rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        {{- include "postiz.labels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # pm2 runs prisma db push before it starts anything, and the worker connects
+        # to Temporal the moment it boots. Both fail loudly if their dependency is
+        # not listening yet; waiting here turns a minute of crash-looping on a cold
+        # start into a pod that simply takes a minute to become ready.
+        - name: wait-for-deps
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z {{ include "postiz.fullname" . }}-postgres 5432; do
+                echo "waiting for postgres"; sleep 3
+              done
+              until nc -z {{ include "postiz.fullname" . }}-temporal 7233; do
+                echo "waiting for temporal"; sleep 3
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: postiz
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.port }}
+          # Every key in the secret becomes an environment variable. That is what
+          # makes adding a social network a secret edit and a pod restart rather than
+          # a chart change: X_API_KEY, LINKEDIN_CLIENT_SECRET and the rest are read
+          # straight from process.env by the provider that needs them.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          env:
+            {{- include "postiz.dbCredentialsEnv" . | nindent 12 }}
+            # Assembled here rather than stored in the secret so the password exists
+            # in exactly one place. $(VAR) is expanded by the kubelet against the
+            # entries above it.
+            - name: DATABASE_URL
+              value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@{{ include "postiz.fullname" . }}-postgres:5432/{{ .Values.postgres.database }}"
+            - name: REDIS_URL
+              value: "redis://{{ include "postiz.fullname" . }}-redis:6379"
+            - name: TEMPORAL_ADDRESS
+              value: "{{ include "postiz.fullname" . }}-temporal:7233"
+            - name: TEMPORAL_NAMESPACE
+              value: {{ .Values.temporal.namespace | quote }}
+            # Read at request time by the frontend's server components, not baked
+            # into the bundle -- which is why one image serves any hostname.
+            - name: MAIN_URL
+              value: {{ .Values.publicUrl | quote }}
+            - name: FRONTEND_URL
+              value: {{ .Values.publicUrl | quote }}
+            - name: NEXT_PUBLIC_BACKEND_URL
+              value: "{{ .Values.publicUrl }}/api"
+            # The frontend's server side talks to the backend over localhost; it has
+            # no reason to leave the pod and go back through Cloudflare to reach it.
+            - name: BACKEND_INTERNAL_URL
+              value: "http://localhost:3000"
+            - name: IS_GENERAL
+              value: "true"
+            - name: DISABLE_REGISTRATION
+              value: {{ .Values.disableRegistration | quote }}
+            - name: STORAGE_PROVIDER
+              value: {{ .Values.storageProvider | quote }}
+            {{- if eq .Values.storageProvider "local" }}
+            - name: UPLOAD_DIRECTORY
+              value: /uploads
+            - name: NEXT_PUBLIC_UPLOAD_DIRECTORY
+              value: /uploads
+            {{- end }}
+            - name: NOT_SECURED
+              value: "false"
+            - name: NX_ADD_PLUGINS
+              value: "false"
+            {{- range $key, $value := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            # A cold start runs the Prisma schema push and boots three Node
+            # processes. Ten minutes of grace, then give up and let it restart.
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            # nginx answering is the only thing worth restarting the pod over: if a
+            # Node process dies, pm2 brings it back without losing the others.
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+          volumeMounts:
+            - name: uploads
+              mountPath: /uploads
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: {{ include "postiz.fullname" . }}-uploads
+        - name: config
+          persistentVolumeClaim:
+            claimName: {{ include "postiz.fullname" . }}-config

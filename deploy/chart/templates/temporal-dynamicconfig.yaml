@@ -1,0 +1,18 @@
+# The dynamic configuration Temporal reads at startup, lifted from upstream's
+# dynamicconfig/development-sql.yaml. Both entries are server tuning, not workflow
+# behaviour: a longer id limit, and a search-attribute cache that refreshes on read.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "postiz.fullname" . }}-temporal-dynamicconfig
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal
+data:
+  development-sql.yaml: |
+    limit.maxIDLength:
+      - value: 255
+        constraints: {}
+    system.forceSearchAttributesCacheRefreshOnRead:
+      - value: true
+        constraints: {}

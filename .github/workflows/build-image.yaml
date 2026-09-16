@@ -1,0 +1,97 @@
+# Build the image this cluster runs, and point the chart at it.
+#
+# Upstream's own build-containers.yml builds amd64 and arm64 on tags and publishes to
+# gitroomhq's registry. This one builds only what we run -- linux/arm64, because the
+# cluster is a single Apple Silicon node -- from whatever is on main, and then writes
+# the tag it produced into deploy/chart/values.yaml so Argo CD deploys it.
+#
+# Nothing here builds on a schedule or on upstream's tags: a merge from upstream into
+# main is a push to main, and that is the trigger.
+name: Build image
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      # Without this the write-back commit below would trigger another build, which
+      # would write back again. Chart edits deploy through Argo CD and need no image.
+      - 'deploy/**'
+      - '.github/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: build-image
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    # GitHub's hosted arm64 runner. Free on public repositories, and it builds the
+    # native architecture -- emulating arm64 on an amd64 runner takes this build from
+    # minutes to most of an hour.
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the tag
+        id: meta
+        run: echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Upstream ships exactly one Dockerfile and calls it .dev; it is what
+          # produces the released image, the name is historical.
+          file: Dockerfile.dev
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/postiz-app:${{ steps.meta.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/postiz-app:latest
+          build-args: |
+            NEXT_PUBLIC_VERSION=${{ steps.meta.outputs.tag }}
+          # The Next.js build is the slow part and it changes only when sources do;
+          # the cache is what keeps a routine merge from upstream under ten minutes.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+  deploy:
+    # Separate job so a failed write-back is legible as a deploy failure rather than
+    # a build failure -- the image is already pushed either way.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Point the chart at the new image
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          # The single quoted tag line under image: in values.yaml. Anchored on the
+          # two-space indent so nothing else named "tag" can match.
+          sed -i -E "s|^(  tag: ).*|\1\"${TAG}\"|" deploy/chart/values.yaml
+          git diff --exit-code deploy/chart/values.yaml && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: deploy ${TAG}"
+          git push
