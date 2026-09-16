@@ -14,7 +14,7 @@ image:
   # the cluster is a single Apple Silicon node, so the second architecture upstream
   # builds would be dead weight. The tag is rewritten by CI; do not edit by hand.
   repository: ghcr.io/ohosgor/postiz-app
-  tag: "latest"
+  tag: "f8b57bc665c4"
   pullPolicy: IfNotPresent
 
 # The package is private, so the pull needs credentials. Same secret name as the
