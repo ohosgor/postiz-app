@@ -72,11 +72,16 @@ spec:
               value: config/dynamicconfig/development-sql.yaml
             - name: ENABLE_ES
               value: {{ .Values.temporal.elasticsearch | quote }}
-            # TEMPORAL_ADDRESS is deliberately unset. It is the address auto-setup's
-            # CLI dials to register the default namespace, and the server binds the
-            # pod IP rather than the loopback -- pointing it at 127.0.0.1 leaves
-            # auto-setup polling a closed port forever and the namespace is never
-            # created. Unset, it defaults to whatever the server bound.
+            # What the server binds, and -- through the entrypoint, which derives
+            # TEMPORAL_ADDRESS from it -- what auto-setup's CLI dials to register the
+            # default namespace. Left alone the image resolves its own hostname,
+            # which in this cluster gives an address the kubelet's readiness probe
+            # cannot reach: the server serves, the probe fails, and the pod never
+            # goes ready. 0.0.0.0 makes both work. Do not set TEMPORAL_ADDRESS by
+            # hand alongside it -- an address the server did not bind leaves
+            # auto-setup polling a closed port forever.
+            - name: BIND_ON_IP
+              value: "0.0.0.0"
             - name: DEFAULT_NAMESPACE
               value: {{ .Values.temporal.namespace | quote }}
           readinessProbe:
