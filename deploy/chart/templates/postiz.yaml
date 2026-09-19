@@ -190,28 +190,43 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+          # Every probe asks the backend, not the frontend.
+          #
+          # / is served by Next.js and answers as soon as it is up, whether or not the
+          # backend behind it exists -- so probing it produced a pod that reported
+          # Ready while every page failed: the frontend renders, its server-side fetch
+          # to localhost:3000 is refused, and the browser gets an error. /api/ is the
+          # backend answering for itself.
+          #
+          # This matters because the backend really does lose a cold start now and
+          # then: it and the orchestrator both create Mastra's tables on first boot
+          # and PostgreSQL rejects the loser of that race, killing the process. The
+          # second attempt finds the tables already there and starts clean -- so the
+          # fix is to notice and restart, which is exactly what these probes now do.
           startupProbe:
             httpGet:
-              path: /
+              path: /api/
               port: http
-            # A cold start runs the Prisma schema push and boots three Node
-            # processes. Ten minutes of grace, then give up and let it restart.
+            # A cold start runs the Prisma schema push and boots three Node processes.
+            # Ten minutes of grace, then give up and let it restart.
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 60
           readinessProbe:
             httpGet:
-              path: /
+              path: /api/
               port: http
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
-            # nginx answering is the only thing worth restarting the pod over: if a
-            # Node process dies, pm2 brings it back without losing the others.
-            tcpSocket:
+            # Slower and more forgiving than readiness: taking the pod out of the
+            # service is cheap, restarting it is not. Five minutes of a backend that
+            # will not answer is a dead one, not a busy one.
+            httpGet:
+              path: /api/
               port: http
             periodSeconds: 30
-            failureThreshold: 5
+            failureThreshold: 10
           resources:
             {{- toYaml .Values.app.resources | nindent 12 }}
           volumeMounts:
