@@ -32,10 +32,11 @@ existingSecret: postiz-secrets
 # this hostname to the service.
 publicUrl: https://postiz.getkiyas.com
 
-# Registration is open only long enough to create the first account. Flip to "true"
-# and resync once you have logged in -- otherwise anyone who finds the hostname can
-# create an account on it.
-disableRegistration: "false"
+# Closed, 19 September 2026, once the first account existed. The hostname is public
+# and there is no other gate in front of it: open registration means anyone who finds
+# the address gets an account. Flip back to "false" only for as long as it takes to
+# create another one.
+disableRegistration: "true"
 
 app:
   replicaCount: 1
