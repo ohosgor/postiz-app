@@ -27,10 +27,18 @@ imagePullSecrets:
 # network's API credentials.
 existingSecret: postiz-secrets
 
-# Public address. Postiz serves the UI and the API from one port behind its own
-# nginx: / is the frontend, /api/ the backend. Cloudflared terminates TLS and routes
-# this hostname to the service.
-publicUrl: https://postiz.getkiyas.com
+# The address Postiz believes it lives at. It goes into MAIN_URL, FRONTEND_URL and
+# NEXT_PUBLIC_BACKEND_URL, so it has to match what the browser actually typed --
+# OAuth callbacks from the social networks come back to it.
+publicUrl: https://postiz.tail7d8e6a.ts.net
+
+# Reachable only from the tailnet, through the Tailscale operator. Postiz holds the
+# credentials to every social account the business posts from; the public internet
+# has no business being able to reach its login form.
+tailnet:
+  enabled: true
+  # The device name, and therefore the MagicDNS name and the certificate.
+  hostname: postiz
 
 # Closed, 19 September 2026, once the first account existed. The hostname is public
 # and there is no other gate in front of it: open registration means anyone who finds

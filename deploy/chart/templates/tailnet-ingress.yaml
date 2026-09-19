@@ -1,0 +1,31 @@
+{{- if .Values.tailnet.enabled }}
+# The tailnet address.
+#
+# Postiz is a management surface: one person uses it, and it holds the credentials to
+# every social account the business posts from. It has no business answering the
+# public internet, where the only thing between it and a stranger is a login form.
+#
+# The Tailscale operator sees this Ingress, joins a device to the tailnet for it, and
+# proxies to the Service. The device gets a MagicDNS name and a real certificate, so
+# the address is a plain https:// one with no warning and no port number -- but it
+# resolves and answers only for machines on the tailnet.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "postiz.fullname" . }}
+  labels:
+    {{- include "postiz.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: {{ include "postiz.fullname" . }}
+      port:
+        number: {{ .Values.app.port }}
+  tls:
+    # Not a certificate reference: this is how the operator is told what to call the
+    # device, and the name it gets is what MagicDNS and the certificate both use.
+    - hosts:
+        - {{ .Values.tailnet.hostname | quote }}
+{{- end }}
