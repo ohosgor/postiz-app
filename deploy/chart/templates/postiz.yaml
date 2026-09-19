@@ -90,6 +90,47 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+        # The two custom search attributes Postiz indexes its workflows by.
+        #
+        # The backend creates them itself on boot -- and, without Elasticsearch, dies
+        # doing it: it asks for them as Text, and PostgreSQL visibility has only three
+        # Text columns in its fixed schema. The process is gone before anything
+        # notices, nginx answers /api/ with 502, and the frontend still loads and goes
+        # Ready, so the pod looks healthy while nobody can log in.
+        #
+        # Creating them here, as Keyword, sidesteps that: the backend looks them up,
+        # finds both, and skips the call that would have failed. Keyword is the better
+        # type anyway -- these are ids matched exactly, not prose to search through.
+        #
+        # It has to be an initContainer rather than a Helm/Argo post-sync hook: those
+        # run once the pod is Ready, which is already too late for the backend inside
+        # it. The CLI is idempotent, so this runs on every start and says the same
+        # thing each time.
+        - name: create-search-attributes
+          image: {{ .Values.temporal.image }}
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              until temporal operator cluster health >/dev/null 2>&1; do
+                echo "waiting for temporal"; sleep 3
+              done
+              temporal operator search-attribute create \
+                --name organizationId --type Keyword \
+                --name postId --type Keyword
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: "{{ include "postiz.fullname" . }}-temporal:7233"
+            - name: TEMPORAL_NAMESPACE
+              value: {{ .Values.temporal.namespace | quote }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
       containers:
         - name: postiz
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
