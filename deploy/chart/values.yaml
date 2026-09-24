@@ -117,9 +117,14 @@ temporal:
     image: temporalio/ui:2.34.0
 
 # Storage for uploaded media. "local" keeps them on the node's disk under /uploads,
-# which is what the PVC above is for. Switch to "cloudflare" to put them in R2 -- the
-# four CLOUDFLARE_* keys then have to exist in the secret.
-storageProvider: local
+# which is what the PVC above is for. "cloudflare" puts them in R2 -- these keys then
+# have to exist in the secret: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ACCESS_KEY,
+# CLOUDFLARE_SECRET_ACCESS_KEY, CLOUDFLARE_BUCKETNAME, CLOUDFLARE_BUCKET_URL.
+#
+# R2 is required for Instagram: Meta downloads the media itself, so the file needs a
+# public URL, and this instance is tailnet-only. Bucket kiyas-social is served at
+# https://media.getkiyas.com; the access key is scoped to that bucket alone.
+storageProvider: cloudflare
 
 # Anything else Postiz reads from the environment and that is not a secret. Social
 # network credentials do NOT go here; they belong in postiz-secrets.
